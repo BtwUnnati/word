@@ -1,16 +1,15 @@
-import os
 import random
 import requests
 import telebot
 import threading
 import time
-from config import BOT_TOKEN
+import config 
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 WORD_LENGTH = 5
-INIT_GUESS_TIME = 120    # Initial time: 2 min
-MIN_GUESS_TIME = 15      # Minimum per guess: 15 sec
+INIT_GUESS_TIME = 120
+MIN_GUESS_TIME = 15
 
 def get_word_list():
     url = 'https://raw.githubusercontent.com/dwyl/english-words/master/words_dictionary.json'
@@ -60,16 +59,11 @@ WELCOME_MSG = (
     "• Multi-player or Solo Wordle mode!\n"
     "• Use /new for competitive group. \n"
     "• Use /solo to play alone.\n"
-    "• Each round time reduces (never below 15 sec).\n"
-    "• Only timeout causes OUT—not invalid word.\n"
 )
 HELP_MSG = (
     "• /new  : Group game \n"
     "• /solo : Solo Game \n"
     "• /join : play with your Friends \n"
-    "• Each round, time reduces (never <15sec)\n"
-    "• Only timeout causes OUT, wrong/short/invalid word just errors\n"
-    "• Emoji/word trail + leaderboard\n"
 )
 
 @bot.message_handler(commands=['start'])
@@ -77,13 +71,11 @@ def start_cmd(m):
     bot.send_message(
         m.chat.id, WELCOME_MSG, parse_mode="HTML", reply_markup=dev_button_markup()
     )
-
 @bot.message_handler(commands=['help'])
 def help_cmd(m):
     bot.send_message(
         m.chat.id, HELP_MSG, parse_mode="HTML", reply_markup=dev_button_markup()
     )
-
 @bot.message_handler(commands=['leaderboard'])
 def leaderboard(m):
     if not scores:
@@ -99,9 +91,7 @@ def leaderboard(m):
         msg += f"{i+1}. {user}: {score}\n"
     bot.send_message(m.chat.id, msg, parse_mode="HTML")
 
-# ---- COMPETITIVE MODE ----
 def get_time_for_round(round_num):
-    # Each round time decrements by 10s, never below min
     t = INIT_GUESS_TIME - (round_num-1)*10
     return max(MIN_GUESS_TIME, t)
 
@@ -121,14 +111,12 @@ def start_game_after_join(cid):
 
 def start_turn(cid):
     game = games[cid]
-    # IF only one left -> winner
     if len(game['players']) == 1:
         winner_id = game['players'][0]
         winname = game['players_names'][winner_id]
         bot.send_message(cid, f"🏆 <b>{winname}</b> wins this game!", parse_mode="HTML")
         scores[winner_id] = scores.get(winner_id, 0)+1
         del games[cid]; return
-    # New word/round
     word = get_random_word()
     game['word'], game['guesses_trail'] = word, []
     uid = game['players'][game['turn_index']]
@@ -149,13 +137,10 @@ def turn_timer_thread(cid, uid, starttime, time_allowed):
         now = time.time()
         left = time_allowed - (now-starttime)
         game = games.get(cid)
-        if not game or not game['playing'] or game['players'][game['turn_index']] != uid:
-            return
+        if not game or not game['playing'] or game['players'][game['turn_index']] != uid: return
         if left <= 0:
-            # OUT!
             out_name = game['players_names'][uid]
             bot.send_message(cid, f"⏰ <b>{out_name}</b> OUT (timeout)!", parse_mode="HTML")
-            # remove
             game['players'].remove(uid)
             if game['turn_index'] >= len(game['players']): game['turn_index'] = 0
             game['round'] += 1
@@ -181,7 +166,7 @@ def new_game(m):
     threading.Thread(target=joiner_timer_thread, args=(cid, time.time())).start()
 
 def joiner_timer_thread(cid, start_at):
-    time.sleep(JOIN_TIME)
+    time.sleep(INIT_GUESS_TIME)
     if games.get(cid,{}).get('playing',False): return
     start_game_after_join(cid)
 
@@ -203,7 +188,6 @@ def join_game(m):
         parse_mode="HTML"
     )
 
-# ---- SOLO MODE ----
 solo_games = {}
 
 def start_solo(cid, uid):
@@ -239,15 +223,29 @@ def solo_game(m):
         return
     start_solo(cid,uid)
 
+def get_word_definition(word):
+    try:
+        resp = requests.get(f'https://api.dictionaryapi.dev/api/v2/entries/en/{word.lower()}')
+        data = resp.json()
+        if isinstance(data, list) and data:
+            entry = data[0]
+            meaning = next(iter(entry['meanings'][0]['definitions']), {})
+            text = f"<b>{word}</b> 1/{len(data)}\nMeaning: {meaning.get('definition','N/A')}\nExample: {meaning.get('example','N/A')}"
+            return text
+    except Exception:
+        return ""
+    return ""
+
 @bot.message_handler(func=lambda m: True)
 def guess_word(m):
     cid = m.chat.id; uid = m.from_user.id; txt = m.text.strip().upper()
+    def is_already_guessed(trail, word):
+        return any(g==word for (g,fb) in trail)
     # Competitive
     if cid in games and games[cid].get('playing',False) and len(games[cid]['players'])>=1:
         game = games[cid]
         # Check if current turn
         if game['players'][game['turn_index']] != uid: return
-        time_allowed = game['time_allowed']
         word = txt
         # Length check
         if not word.isalpha() or len(word)!=WORD_LENGTH:
@@ -255,23 +253,30 @@ def guess_word(m):
         # Invalid word check
         if word not in ALL_WORDS:
             bot.send_message(cid, f"❌ <b>{word}</b> is not a valid word",parse_mode="HTML"); return
+        # Duplicacy check
+        if is_already_guessed(game['guesses_trail'], word):
+            bot.send_message(cid, "Someone has already guessed your word. Please try another one!", parse_mode="HTML")
+            return
         # Feedback + trail
         fb = color_feedback(word,game['word'])
         game['guesses_trail'].append((word,fb))
         trail = "\n".join(f"{fb}  <b>{g}</b>" for g,fb in game['guesses_trail'])
         bot.send_message(cid, trail, parse_mode="HTML")
         if word == game['word']:
-            winname = game['players_names'][uid]
-            bot.send_message(cid, f"🏆 <b>{winname}</b> guessed correctly!",parse_mode="HTML")
-            scores[uid] = scores.get(uid, 0)+1
+            score_added = scores.get(uid,0)+1
+            scores[uid] = score_added
+            win_msg = f"Congrats! You guessed it correctly.\nAdded {score_added} to the Leaderboard.\nStart with /new"
+            bot.send_message(cid, win_msg, parse_mode="HTML")
+            # Meaning & Example if available
+            definition = get_word_definition(word)
+            if definition:
+                bot.send_message(cid, definition, parse_mode="HTML")
             del games[cid]
         else:
-            # Next turn
             game['round'] += 1
             game['turn_index'] = (game['turn_index']+1)%len(game['players'])
             start_turn(cid)
         return
-
     # SOLO
     if (cid,uid) in solo_games:
         game = solo_games[(cid,uid)]
@@ -281,13 +286,22 @@ def guess_word(m):
             bot.send_message(cid, f"❌ Word must be exactly {WORD_LENGTH} letters",parse_mode="HTML"); return
         if word not in ALL_WORDS:
             bot.send_message(cid, f"❌ <b>{word}</b> is not a valid word",parse_mode="HTML"); return
+        # Duplicacy check
+        if is_already_guessed(game['trail'], word):
+            bot.send_message(cid, "Someone has already guessed your word. Please try another one!", parse_mode="HTML")
+            return
         fb = color_feedback(word,game['word'])
         game['trail'].append((word,fb))
         trail = "\n".join(f"{fb}  <b>{g}</b>" for g,fb in game['trail'])
         bot.send_message(cid, trail, parse_mode="HTML")
         if word == game['word']:
-            bot.send_message(cid, f"🏆 You WIN! Guessed correctly.",parse_mode="HTML")
-            scores[uid] = scores.get(uid,0)+1
+            score_added = scores.get(uid,0)+1
+            scores[uid] = score_added
+            win_msg = f"Congrats! You guessed it correctly.\nAdded {score_added} to the Leaderboard.\nStart with /new"
+            bot.send_message(cid, win_msg, parse_mode="HTML")
+            definition = get_word_definition(word)
+            if definition:
+                bot.send_message(cid, definition, parse_mode="HTML")
             del solo_games[(cid,uid)]
         else:
             game['round'] +=1
@@ -301,4 +315,4 @@ def guess_word(m):
 if __name__ == '__main__':
     print("Bot running ...")
     bot.infinity_polling()
-    
+        
