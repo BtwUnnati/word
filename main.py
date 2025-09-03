@@ -66,7 +66,7 @@ HELP_MSG = (
     "• /join : play with your Friends \n"
 )
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=['dev'])
 def start_cmd(m):
     bot.send_message(
         m.chat.id, WELCOME_MSG, parse_mode="HTML", reply_markup=dev_button_markup()
