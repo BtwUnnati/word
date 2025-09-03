@@ -3,7 +3,7 @@ import requests
 import telebot
 import threading
 import time
-import config 
+from config import BOT_TOKEN
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
